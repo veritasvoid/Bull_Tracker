@@ -1,6 +1,16 @@
 {
-  "last_updated": null,
+  "last_updated": "2026-05-25T17:20:07.051113+00:00",
   "source": "SEC EDGAR Form 13F",
+  "funds_tracked": [
+    "Berkshire Hathaway",
+    "Pershing Square",
+    "Scion Asset Mgmt",
+    "Bridgewater Assoc",
+    "Tiger Global Mgmt",
+    "Duquesne Family Off",
+    "Third Point LLC",
+    "Appaloosa Mgmt"
+  ],
   "count": 0,
   "trades": []
 }
