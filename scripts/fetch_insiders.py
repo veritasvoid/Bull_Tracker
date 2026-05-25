@@ -1,7 +1,8 @@
 """
 fetch_insiders.py
-Fetches SEC Form 4 insider trades from EDGAR for S&P 500 companies.
-Flags unusual size/timing. Generates AI summaries.
+Fetches ALL recent Form 4 insider trades from SEC EDGAR.
+No company whitelist — captures everything, filters by trade value.
+Flags large trades ($1M+), cluster buys, and C-suite moves.
 """
 
 import json, os, time, re, sys
@@ -10,398 +11,242 @@ from pathlib import Path
 import urllib.request
 import urllib.parse
 
-OUTPUT_FILE = Path(__file__).parent.parent / "data" / "insider_trades.json"
-XAI_API_KEY = os.environ.get("XAI_API_KEY", "")
+OUTPUT_FILE  = Path(__file__).parent.parent / "data" / "insider_trades.json"
+XAI_API_KEY  = os.environ.get("XAI_API_KEY", "")
+HEADERS      = {"User-Agent": "BullTracker Personal Research veritasvoid2025@gmail.com"}
 
-# Top companies to monitor for insider activity
-WATCH_COMPANIES = {
-    # Mega cap tech
-    "AAPL": "Apple Inc",
-    "MSFT": "Microsoft Corp",
-    "NVDA": "NVIDIA Corp",
-    "GOOGL": "Alphabet Inc",
-    "AMZN": "Amazon.com Inc",
-    "META": "Meta Platforms",
-    "TSLA": "Tesla Inc",
-    # AI & high growth
-    "CRWV": "CoreWeave Inc",
-    "PLTR": "Palantir Technologies",
-    "ARM":  "Arm Holdings",
-    "SMCI": "Super Micro Computer",
-    "DELL": "Dell Technologies",
-    "CRM":  "Salesforce Inc",
-    "ORCL": "Oracle Corp",
-    "SNOW": "Snowflake Inc",
-    "MSTR": "MicroStrategy",
-    # Finance
-    "BRK-A": "Berkshire Hathaway",
-    "JPM":  "JPMorgan Chase",
-    "GS":   "Goldman Sachs",
-    "V":    "Visa Inc",
-    "MA":   "Mastercard Inc",
-    "BAC":  "Bank of America",
-    "MS":   "Morgan Stanley",
-    # Healthcare
-    "UNH":  "UnitedHealth Group",
-    "JNJ":  "Johnson & Johnson",
-    "LLY":  "Eli Lilly",
-    "ABBV": "AbbVie Inc",
-    "PFE":  "Pfizer Inc",
-    "MRK":  "Merck & Co",
-    # Energy & Industrial
-    "XOM":  "Exxon Mobil",
-    "CVX":  "Chevron Corp",
-    # Consumer
-    "WMT":  "Walmart Inc",
-    "HD":   "Home Depot",
-    "KO":   "Coca-Cola Co",
-    "PG":   "Procter & Gamble",
-    # Trump-linked
-    "DJT":  "Trump Media & Technology",
-}
+# Minimum trade value to include (filters out tiny token purchases)
+MIN_TRADE_VALUE  = 100_000    # $100K minimum
+FLAG_THRESHOLD   = 1_000_000  # $1M+ = unusual flag
+DAYS_BACK        = 30         # Rolling 30-day window
 
-# Amount thresholds for unusual flags
-LARGE_TRADE_THRESHOLD = 5_000_000    # $5M+
-CLUSTER_WINDOW_DAYS   = 7
 
+# ── QUIVER QUANT — PRIMARY SOURCE ─────────────────────────────────────────────
 
 def fetch_quiver_insiders():
     """
-    Fetch insider trades from Quiver Quantitative free tier.
-    More reliable than EDGAR Archives from GitHub Actions.
+    Quiver Quant aggregates Form 4 data — works from GitHub Actions.
+    Returns all trades, filtered by value threshold.
     """
     trades = []
     url = "https://api.quiverquant.com/beta/live/insiders"
 
     try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "BullTracker Personal Research veritasvoid2025@gmail.com",
-            "Accept": "application/json",
-        })
-        with urllib.request.urlopen(req, timeout=15) as r:
+        req = urllib.request.Request(url, headers={**HEADERS, "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=20) as r:
             data = json.loads(r.read())
 
-        print(f"[QuiverQuant Insiders] Got {len(data)} records")
-
-        cutoff = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
+        print(f"[QuiverQuant] Raw records: {len(data)}")
+        cutoff = (datetime.now() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
 
         for item in (data if isinstance(data, list) else []):
-            ticker = (item.get("Ticker") or "").upper()
-            if ticker not in WATCH_COMPANIES:
-                continue
-
             tx_date = (item.get("Date") or "")[:10]
             if tx_date < cutoff:
                 continue
 
-            tx_type_raw = (item.get("TransactionType") or "").lower()
-            tx_type = "buy" if any(x in tx_type_raw for x in ["purchase","buy","p -"]) else "sell"
+            shares = float(item.get("Shares") or 0)
+            price  = float(item.get("Price")  or 0)
+            total  = shares * price
 
-            shares  = item.get("Shares") or 0
-            price   = item.get("Price") or 0
-            total_v = float(shares or 0) * float(price or 0)
+            if total < MIN_TRADE_VALUE:
+                continue
 
-            unusual = total_v >= LARGE_TRADE_THRESHOLD
+            tx_raw   = (item.get("TransactionType") or "").lower()
+            tx_type  = "buy" if any(x in tx_raw for x in ["purchase", "p -", "buy"]) else "sell"
+            ticker   = (item.get("Ticker") or "").upper().strip()
+            unusual  = total >= FLAG_THRESHOLD
 
-            trade = {
-                "id":              f"qv_insider_{ticker}_{item.get('Name','')}_{tx_date}",
+            trades.append({
+                "id":              f"qv_{ticker}_{item.get('Name','')}_{tx_date}_{tx_type}",
                 "name":            item.get("Name") or "Unknown",
                 "role":            item.get("Title") or "Corporate Insider",
-                "ticker":          ticker,
-                "company":         WATCH_COMPANIES.get(ticker, ""),
+                "ticker":          ticker or None,
+                "company":         item.get("Company") or "",
                 "type":            tx_type,
-                "shares":          int(float(shares)) if shares else None,
-                "price_per_share": round(float(price), 2) if price else None,
-                "amount_min":      total_v,
-                "amount_max":      total_v,
-                "amount_raw":      f"${total_v:,.0f}" if total_v else None,
+                "shares":          int(shares) if shares else None,
+                "price_per_share": round(price, 2) if price else None,
+                "amount_min":      total,
+                "amount_max":      total,
+                "amount_raw":      f"${total:,.0f}",
                 "trade_date":      tx_date,
                 "filed_date":      tx_date,
                 "delay_days":      0,
-                "sector":          get_sector(ticker),
-                "source":          "QuiverQuant Form 4",
+                "sector":          None,
+                "source":          "QuiverQuant / Form 4",
                 "unusual":         unusual,
-                "unusual_reason":  f"${total_v/1e6:.1f}M trade" if unusual else None,
+                "unusual_reason":  f"${total/1e6:.1f}M trade" if unusual else None,
                 "summary":         None,
-            }
-            trades.append(trade)
+            })
 
     except Exception as e:
-        print(f"[QuiverQuant Insiders] Error: {e}", file=sys.stderr)
+        print(f"[QuiverQuant] Error: {e}", file=sys.stderr)
 
     return trades
 
 
-    """Fetch recent Form 4 filings from EDGAR full-text search."""
-    trades = []
-    from_date = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
+# ── EDGAR FULL-TEXT SEARCH — SECONDARY SOURCE ─────────────────────────────────
 
+def fetch_edgar_form4():
+    """
+    Fetch Form 4 metadata from EDGAR full-text search.
+    Parses XML only for trades above value threshold.
+    """
+    trades = []
+    from_date = (datetime.now() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
     url = (
         "https://efts.sec.gov/LATEST/search-index"
-        f"?q=&forms=4&dateRange=custom&startdt={from_date}&enddt="
-        + datetime.now().strftime("%Y-%m-%d")
-        + "&hits.hits.total.value=true&hits.hits._source=period_of_report,entity_name,file_date"
+        f"?forms=4&dateRange=custom&startdt={from_date}"
+        f"&enddt={datetime.now().strftime('%Y-%m-%d')}"
+        "&hits.hits.total.value=true&hits.hits._source=period_of_report,entity_name,file_date"
+        "&hits.hits.total=200"
     )
 
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "BullTracker Personal Research veritasvoid2025@gmail.com"})
+        req = urllib.request.Request(url, headers=HEADERS)
         with urllib.request.urlopen(req, timeout=20) as r:
             data = json.loads(r.read())
 
         hits = data.get("hits", {}).get("hits", [])
         print(f"[EDGAR] Form 4 hits: {len(hits)}")
 
-        for hit in hits[:200]:
-            src = hit.get("_source", {})
-            accession = hit.get("_id", "").replace("-", "")
-            parsed = parse_form4_filing(accession, src)
-            if parsed:
-                trades.extend(parsed)
+        for hit in hits[:150]:
+            src       = hit.get("_source", {})
+            accession = (hit.get("_id") or "").replace("-", "")
+            if not accession:
+                continue
 
-        time.sleep(0.5)
+            cik_match = re.search(r'/data/(\d+)/', hit.get("_index", "") + accession)
+            result = parse_form4(accession, src)
+            trades.extend(result)
+            time.sleep(0.11)  # SEC rate limit: max 10 req/sec
 
     except Exception as e:
-        print(f"[EDGAR] Search error: {e}", file=sys.stderr)
+        print(f"[EDGAR] Error: {e}", file=sys.stderr)
 
     return trades
 
 
-def parse_form4_filing(accession_raw, src):
-    """Fetch and parse individual Form 4 XML filing."""
+def parse_form4(accession, src):
+    """Fetch and parse a single Form 4 XML from EDGAR Archives."""
     trades = []
-
-    # Build EDGAR filing URL
-    if not accession_raw:
-        return trades
-
-    accession = re.sub(r'[^0-9]', '', accession_raw)
     if len(accession) < 18:
         return trades
 
-    cik = accession[:10].lstrip("0")
-    acc_dashed = f"{accession[:10]}-{accession[10:12]}-{accession[12:]}"
-    xml_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/{accession}-index.htm"
+    cik      = accession[:10].lstrip("0")
+    idx_url  = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/{accession}-index.htm"
 
     try:
-        req = urllib.request.Request(xml_url, headers={"User-Agent": "BullTracker Personal Research veritasvoid2025@gmail.com"})
+        req = urllib.request.Request(idx_url, headers=HEADERS)
         with urllib.request.urlopen(req, timeout=10) as r:
             html = r.read().decode("utf-8", errors="replace")
 
-        # Find the main .xml or form4 file
         xml_files = re.findall(r'href="(/Archives/[^"]+\.xml)"', html, re.IGNORECASE)
         if not xml_files:
             return trades
 
-        form4_url = f"https://www.sec.gov{xml_files[0]}"
-        req2 = urllib.request.Request(form4_url, headers={"User-Agent": "BullTracker Personal Research veritasvoid2025@gmail.com"})
+        xml_url = f"https://www.sec.gov{xml_files[0]}"
+        req2    = urllib.request.Request(xml_url, headers=HEADERS)
         with urllib.request.urlopen(req2, timeout=10) as r2:
             xml = r2.read().decode("utf-8", errors="replace")
 
-        trades = extract_from_xml(xml, src, cik)
+        trades = extract_transactions(xml, src)
 
-    except Exception as e:
-        pass  # Many filings won't match our watchlist — silent skip
+    except Exception:
+        pass
 
     return trades
 
 
-def extract_from_xml(xml, src, cik):
-    """Parse Form 4 XML and extract non-derivative transaction table."""
+def extract_transactions(xml, src):
+    """Parse Form 4 XML — extract all non-derivative transactions."""
     trades = []
 
     def tag(t, content):
         m = re.search(rf'<{t}[^>]*>(.*?)</{t}>', content, re.DOTALL | re.IGNORECASE)
         return m.group(1).strip() if m else ""
 
-    issuer_ticker = tag("issuerTradingSymbol", xml).upper()
-
-    # Only process companies on our watchlist
-    if issuer_ticker not in WATCH_COMPANIES:
-        return trades
-
-    issuer_name = tag("issuerName", xml) or WATCH_COMPANIES.get(issuer_ticker, "")
+    ticker      = tag("issuerTradingSymbol", xml).upper()
+    issuer_name = tag("issuerName", xml)
     filer_name  = tag("rptOwnerName", xml) or tag("reportingOwnerName", xml)
-    role_raw    = tag("officerTitle", xml) or tag("reportingOwnerRelationship", xml)
-    is_officer  = bool(re.search(r'officer|director|ceo|cfo|coo|president|vp', role_raw or "", re.IGNORECASE))
+    role        = tag("officerTitle", xml) or "Corporate Insider"
+    file_date   = src.get("file_date", "")
 
-    if not filer_name:
-        return trades
-
-    file_date = src.get("file_date") or tag("periodOfReport", xml) or ""
-
-    # Non-derivative transactions
     tx_blocks = re.findall(
         r'<nonDerivativeTransaction>(.*?)</nonDerivativeTransaction>',
         xml, re.DOTALL | re.IGNORECASE
     )
 
     for block in tx_blocks:
-        tx_code   = tag("transactionCode", block)
-        shares    = tag("transactionShares", block)
-        price     = tag("transactionPricePerShare", block)
-        tx_date   = tag("transactionDate", block)
-        direct    = tag("directOrIndirectOwnership", block)
-
-        # P = Purchase, S = Sale
+        tx_code  = tag("transactionCode", block)
         if tx_code not in ("P", "S"):
             continue
 
-        trade_type = "buy" if tx_code == "P" else "sell"
+        shares_s = tag("transactionShares", block)
+        price_s  = tag("transactionPricePerShare", block)
+        tx_date  = tag("transactionDate", block)
 
         try:
-            shares_n = float(re.sub(r'[^\d.]', '', shares)) if shares else 0
-            price_n  = float(re.sub(r'[^\d.]', '', price)) if price else 0
-            total_v  = shares_n * price_n
+            shares = float(re.sub(r'[^\d.]', '', shares_s)) if shares_s else 0
+            price  = float(re.sub(r'[^\d.]', '', price_s))  if price_s  else 0
+            total  = shares * price
         except Exception:
-            shares_n, price_n, total_v = 0, 0, 0
+            total = 0
 
-        unusual = total_v >= LARGE_TRADE_THRESHOLD
-        unusual_reason = f"${total_v/1e6:.1f}M trade — above $5M threshold" if unusual else None
+        if total < MIN_TRADE_VALUE:
+            continue
 
-        trade = {
-            "id":             f"f4_{cik}_{issuer_ticker}_{tx_date}_{tx_code}",
-            "name":           filer_name,
-            "role":           role_raw or "Corporate Insider",
-            "ticker":         issuer_ticker,
-            "company":        issuer_name,
-            "type":           trade_type,
-            "shares":         int(shares_n) if shares_n else None,
-            "price_per_share": round(price_n, 2) if price_n else None,
-            "amount_min":     total_v,
-            "amount_max":     total_v,
-            "amount_raw":     f"${total_v:,.0f}" if total_v else None,
-            "trade_date":     tx_date[:10] if tx_date else None,
-            "filed_date":     file_date[:10] if file_date else None,
-            "delay_days":     compute_delay(tx_date, file_date),
-            "ownership":      "Direct" if direct == "D" else "Indirect",
-            "sector":         get_sector(issuer_ticker),
-            "source":         "SEC EDGAR Form 4",
-            "unusual":        unusual,
-            "unusual_reason": unusual_reason,
-            "summary":        None,
-        }
-        trades.append(trade)
+        tx_type = "buy" if tx_code == "P" else "sell"
+        unusual = total >= FLAG_THRESHOLD
 
-    return trades
-
-
-def fetch_via_edgar_rss():
-    """Alternative: fetch latest Form 4 filings from EDGAR RSS feed."""
-    trades = []
-    url = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=4&dateb=&owner=include&count=100&search_text=&output=atom"
-
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "BullTracker Personal Research veritasvoid2025@gmail.com"})
-        with urllib.request.urlopen(req, timeout=15) as r:
-            content = r.read().decode("utf-8", errors="replace")
-
-        entries = re.findall(r'<entry>(.*?)</entry>', content, re.DOTALL)
-        print(f"[EDGAR RSS] {len(entries)} entries")
-
-        for entry in entries[:100]:
-            filing_url_m = re.search(r'<filing-href>(.*?)</filing-href>', entry)
-            if not filing_url_m:
-                continue
-            filing_url = filing_url_m.group(1).strip()
-
-            try:
-                req2 = urllib.request.Request(filing_url, headers={"User-Agent": "BullTracker Personal Research veritasvoid2025@gmail.com"})
-                with urllib.request.urlopen(req2, timeout=10) as r2:
-                    idx = r2.read().decode("utf-8", errors="replace")
-
-                xml_links = re.findall(r'<a href="(/Archives/[^"]+\.xml)"', idx)
-                if xml_links:
-                    xml_url = f"https://www.sec.gov{xml_links[0]}"
-                    req3 = urllib.request.Request(xml_url, headers={"User-Agent": "BullTracker Personal Research veritasvoid2025@gmail.com"})
-                    with urllib.request.urlopen(req3, timeout=10) as r3:
-                        xml = r3.read().decode("utf-8", errors="replace")
-                    cik_m = re.search(r'/data/(\d+)/', xml_links[0])
-                    cik = cik_m.group(1) if cik_m else ""
-                    result = extract_from_xml(xml, {}, cik)
-                    trades.extend(result)
-
-            except Exception:
-                pass
-
-            time.sleep(0.1)
-
-    except Exception as e:
-        print(f"[EDGAR RSS] Error: {e}", file=sys.stderr)
+        trades.append({
+            "id":              f"f4_{ticker}_{filer_name}_{tx_date}_{tx_code}",
+            "name":            filer_name or "Unknown",
+            "role":            role,
+            "ticker":          ticker or None,
+            "company":         issuer_name,
+            "type":            tx_type,
+            "shares":          int(shares) if shares else None,
+            "price_per_share": round(price, 2) if price else None,
+            "amount_min":      total,
+            "amount_max":      total,
+            "amount_raw":      f"${total:,.0f}",
+            "trade_date":      tx_date[:10] if tx_date else None,
+            "filed_date":      file_date[:10] if file_date else None,
+            "delay_days":      compute_delay(tx_date, file_date),
+            "sector":          None,
+            "source":          "SEC EDGAR Form 4",
+            "unusual":         unusual,
+            "unusual_reason":  f"${total/1e6:.1f}M trade" if unusual else None,
+            "summary":         None,
+        })
 
     return trades
 
 
-def compute_delay(trade_date_str, filed_date_str):
+# ── HELPERS ───────────────────────────────────────────────────────────────────
+
+def compute_delay(t, f):
     try:
-        td = datetime.strptime((trade_date_str or "")[:10], "%Y-%m-%d")
-        fd = datetime.strptime((filed_date_str or "")[:10], "%Y-%m-%d")
-        return max(0, (fd - td).days)
+        return max(0, (
+            datetime.strptime(f[:10], "%Y-%m-%d") -
+            datetime.strptime(t[:10], "%Y-%m-%d")
+        ).days)
     except Exception:
         return 0
 
 
-def get_sector(ticker):
-    sectors = {
-        "AAPL":"Technology","MSFT":"Technology","NVDA":"Technology",
-        "GOOGL":"Technology","AMZN":"Consumer","META":"Technology",
-        "TSLA":"Automotive","JPM":"Finance","V":"Finance","BAC":"Finance",
-        "UNH":"Healthcare","JNJ":"Healthcare","MRK":"Healthcare",
-        "LLY":"Healthcare","PFE":"Healthcare","ABBV":"Healthcare",
-        "XOM":"Energy","CVX":"Energy","WMT":"Retail","PG":"Consumer",
-        "HD":"Retail","KO":"Consumer","MA":"Finance","DJT":"Media",
-    }
-    return sectors.get(ticker)
-
-
-def flag_cluster_trades(trades):
-    """Flag when multiple insiders buy same ticker within 7 days."""
+def flag_clusters(trades):
+    """Flag when 2+ insiders buy same ticker within the window."""
     from collections import defaultdict
     by_ticker = defaultdict(list)
     for t in trades:
         if t["ticker"] and t["type"] == "buy":
             by_ticker[t["ticker"]].append(t)
-
     for ticker, group in by_ticker.items():
         if len(group) >= 2:
             for t in group:
                 t["unusual"] = True
-                t["unusual_reason"] = f"Cluster: {len(group)} insiders buying {ticker} this week"
-
-
-def generate_summary(trade):
-    if not XAI_API_KEY:
-        return None
-
-    prompt = (
-        f"{trade['name']} ({trade.get('role','insider')}) at {trade['company']} "
-        f"{'purchased' if trade['type']=='buy' else 'sold'} "
-        f"{trade.get('shares','?')} shares of {trade['ticker']} "
-        f"at ${trade.get('price_per_share','?')} per share "
-        f"(total ~{trade.get('amount_raw','undisclosed')}) on {trade.get('trade_date','')}. "
-        f"Write 1-2 sentences in plain English explaining what this insider move means for regular investors. "
-        f"Be direct and factual. No hedging."
-    )
-
-    try:
-        payload = json.dumps({
-            "model": "grok-3-mini",
-            "max_tokens": 150,
-            "messages": [{"role": "user", "content": prompt}]
-        }).encode()
-        req = urllib.request.Request(
-            "https://api.x.ai/v1/chat/completions",
-            data=payload,
-            headers={
-                "Authorization": f"Bearer {XAI_API_KEY}",
-                "content-type": "application/json",
-            }
-        )
-        with urllib.request.urlopen(req, timeout=20) as r:
-            resp = json.loads(r.read())
-        return resp["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        print(f"[AI] Error: {e}", file=sys.stderr)
-        return None
+                t["unusual_reason"] = f"Cluster: {len(group)} insiders buying {ticker}"
 
 
 def dedup(trades):
@@ -414,44 +259,82 @@ def dedup(trades):
     return out
 
 
+# ── AI SUMMARIES ─────────────────────────────────────────────────────────────
+
+def generate_summary(trade):
+    if not XAI_API_KEY:
+        return None
+    prompt = (
+        f"{trade['name']} ({trade.get('role','insider')}) at {trade.get('company', trade.get('ticker','?'))} "
+        f"{'purchased' if trade['type']=='buy' else 'sold'} {trade.get('shares','?')} shares "
+        f"of {trade['ticker']} at ${trade.get('price_per_share','?')} per share "
+        f"(total ~{trade.get('amount_raw','undisclosed')}) on {trade.get('trade_date','')}. "
+        f"Write 1-2 sentences in plain English explaining what this insider move means for regular investors. "
+        f"Be direct and factual."
+    )
+    try:
+        payload = json.dumps({
+            "model": "grok-3-mini",
+            "max_tokens": 150,
+            "messages": [{"role": "user", "content": prompt}]
+        }).encode()
+        req = urllib.request.Request(
+            "https://api.x.ai/v1/chat/completions",
+            data=payload,
+            headers={**HEADERS, "Authorization": f"Bearer {XAI_API_KEY}", "Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=20) as r:
+            resp = json.loads(r.read())
+        return resp["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"[AI] Error: {e}", file=sys.stderr)
+        return None
+
+
+# ── MAIN ─────────────────────────────────────────────────────────────────────
+
 def main():
-    print("=== Fetching Insider Trades (Form 4) ===")
+    print("=== Fetching Insider Trades (Form 4) — ALL companies ===")
+    print(f"    Min value: ${MIN_TRADE_VALUE:,}  |  Flag threshold: ${FLAG_THRESHOLD:,}  |  Window: {DAYS_BACK} days")
 
     trades = []
 
-    # Primary: Quiver Quant (works from GitHub Actions)
+    # Primary: QuiverQuant (reliable from GitHub Actions)
     t0 = fetch_quiver_insiders()
-    print(f"[QuiverQuant] Watchlist hits: {len(t0)}")
+    print(f"[QuiverQuant] Above threshold: {len(t0)}")
     trades.extend(t0)
 
-    # Secondary: EDGAR search index (metadata only, no Archives)
-    if len(trades) < 5:
-        t1 = fetch_recent_form4()
-        print(f"[EDGAR Search] Watchlist hits: {len(t1)}")
+    # Secondary: EDGAR direct (if QuiverQuant is sparse)
+    if len(trades) < 10:
+        print("Supplementing with EDGAR...")
+        t1 = fetch_edgar_form4()
+        print(f"[EDGAR] Above threshold: {len(t1)}")
         trades.extend(t1)
 
     trades = dedup(trades)
-    flag_cluster_trades(trades)
-    trades.sort(key=lambda t: t.get("filed_date") or "", reverse=True)
-    print(f"Total unique insider trades: {len(trades)}")
+    flag_clusters(trades)
 
-    # Generate AI summaries
+    # Sort by trade value descending — biggest moves first
+    trades.sort(key=lambda t: t.get("amount_max") or 0, reverse=True)
+    print(f"Total trades above ${MIN_TRADE_VALUE:,}: {len(trades)}")
+
     if XAI_API_KEY:
-        print("Generating AI summaries...")
-        for t in trades[:40]:
+        print("Generating AI summaries for top trades...")
+        for t in trades[:30]:
             if not t.get("summary"):
                 t["summary"] = generate_summary(t)
                 time.sleep(0.3)
 
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     output = {
-        "last_updated": datetime.now(timezone.utc).isoformat(),
-        "source":       "SEC EDGAR Form 4",
-        "watch_tickers": list(WATCH_COMPANIES.keys()),
-        "count":        len(trades),
-        "trades":       trades,
+        "last_updated":    datetime.now(timezone.utc).isoformat(),
+        "source":          "QuiverQuant / SEC EDGAR Form 4",
+        "min_trade_value": MIN_TRADE_VALUE,
+        "flag_threshold":  FLAG_THRESHOLD,
+        "days_back":       DAYS_BACK,
+        "count":           len(trades),
+        "trades":          trades,
     }
-
     with open(OUTPUT_FILE, "w") as f:
         json.dump(output, f, indent=2, default=str)
 
