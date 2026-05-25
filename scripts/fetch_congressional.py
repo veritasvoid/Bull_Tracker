@@ -362,12 +362,17 @@ def main():
     print(f"[House] Watchlist hits: {len(house)}")
     all_trades.extend(house)
 
-    # Dedup + filter to last 90 days + sort newest first
+    # Dedup + filter: last 60 days + minimum $50K trade
     trades = dedup(all_trades)
-    cutoff = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
-    trades = [t for t in trades if (t.get("trade_date") or t.get("filed_date") or "") >= cutoff]
-    trades.sort(key=lambda t: t.get("trade_date") or t.get("filed_date") or "", reverse=True)
-    print(f"Total unique trades (last 90 days): {len(trades)}")
+    cutoff  = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
+    trades  = [
+        t for t in trades
+        if (t.get("trade_date") or t.get("filed_date") or "") >= cutoff
+        and (t.get("amount_max") or 0) >= 50_000
+    ]
+    # Sort biggest trades first
+    trades.sort(key=lambda t: t.get("amount_max") or 0, reverse=True)
+    print(f"Total trades (last 60 days, $50K+): {len(trades)}")
 
     # Generate AI summaries
     if XAI_API_KEY:

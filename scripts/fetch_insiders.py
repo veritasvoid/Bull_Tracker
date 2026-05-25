@@ -1,8 +1,7 @@
 """
 fetch_insiders.py
-Fetches ALL recent Form 4 insider trades from SEC EDGAR.
-No company whitelist — captures everything, filters by trade value.
-Flags large trades ($1M+), cluster buys, and C-suite moves.
+Fetches large insider trades from OpenInsider (SEC Form 4 aggregator).
+No company whitelist. Filters by minimum dollar value. Sorted by size.
 """
 
 import json, os, time, re, sys
@@ -11,238 +10,134 @@ from pathlib import Path
 import urllib.request
 import urllib.parse
 
-OUTPUT_FILE  = Path(__file__).parent.parent / "data" / "insider_trades.json"
-XAI_API_KEY  = os.environ.get("XAI_API_KEY", "")
-HEADERS      = {"User-Agent": "BullTracker Personal Research veritasvoid2025@gmail.com"}
-
-# Minimum trade value to include (filters out tiny token purchases)
-MIN_TRADE_VALUE  = 100_000    # $100K minimum
-FLAG_THRESHOLD   = 1_000_000  # $1M+ = unusual flag
-DAYS_BACK        = 30         # Rolling 30-day window
+OUTPUT_FILE     = Path(__file__).parent.parent / "data" / "insider_trades.json"
+XAI_API_KEY     = os.environ.get("XAI_API_KEY", "")
+HEADERS         = {"User-Agent": "BullTracker Personal Research veritasvoid2025@gmail.com"}
+MIN_VALUE       = 1_000_000   # $1M minimum — no noise
+FLAG_VALUE      = 5_000_000   # $5M+ = unusual
+DAYS_BACK       = 60
 
 
-# ── QUIVER QUANT — PRIMARY SOURCE ─────────────────────────────────────────────
-
-def fetch_quiver_insiders():
+def fetch_openinsider():
     """
-    Quiver Quant aggregates Form 4 data — works from GitHub Actions.
-    Returns all trades, filtered by value threshold.
+    Scrape OpenInsider screener — aggregates all SEC Form 4 filings.
+    Filters: last 60 days, $1M+ trade value, buys AND sells.
     """
     trades = []
-    url = "https://api.quiverquant.com/beta/live/insiders"
 
-    try:
-        req = urllib.request.Request(url, headers={**HEADERS, "Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=20) as r:
-            data = json.loads(r.read())
+    # Two calls: one for buys (xp=1), one for sells (xs=1)
+    for tx_flag, tx_type in [("xp=1&xs=0", "buy"), ("xp=0&xs=1", "sell")]:
+        url = (
+            f"https://openinsider.com/screener?"
+            f"s=&o=&pl={MIN_VALUE}&ph=&ll=&lh="
+            f"&fd={DAYS_BACK}&fdr=&td=0&tdr="
+            f"&fdlyl=&fdlyh=&daysago="
+            f"&{tx_flag}"
+            f"&vl={MIN_VALUE}&vh="
+            f"&ocl=&och=&sic1=-1&sicl=100&sich=9999"
+            f"&grp=0&nfl=&nfh=&nil=&nih=&nol=&noh=&v2l=&v2h=&ov="
+            f"&tc=1&cnt=100&page=1"
+        )
 
-        print(f"[QuiverQuant] Raw records: {len(data)}")
-        cutoff = (datetime.now() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
+        try:
+            req = urllib.request.Request(url, headers={
+                **HEADERS,
+                "Accept": "text/html",
+                "Accept-Language": "en-US,en;q=0.9",
+            })
+            with urllib.request.urlopen(req, timeout=20) as r:
+                html = r.read().decode("utf-8", errors="replace")
 
-        for item in (data if isinstance(data, list) else []):
-            tx_date = (item.get("Date") or "")[:10]
-            if tx_date < cutoff:
+            parsed = parse_openinsider_table(html, tx_type)
+            print(f"[OpenInsider] {tx_type.upper()}S found: {len(parsed)}")
+            trades.extend(parsed)
+            time.sleep(1)
+
+        except Exception as e:
+            print(f"[OpenInsider] {tx_type} error: {e}", file=sys.stderr)
+
+    return trades
+
+
+def parse_openinsider_table(html, tx_type):
+    """Parse OpenInsider HTML table rows into trade dicts."""
+    trades = []
+
+    # Find table body rows
+    tbody = re.search(r'<tbody>(.*?)</tbody>', html, re.DOTALL | re.IGNORECASE)
+    if not tbody:
+        return trades
+
+    rows = re.findall(r'<tr[^>]*>(.*?)</tr>', tbody.group(1), re.DOTALL | re.IGNORECASE)
+
+    for row in rows:
+        cells = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL | re.IGNORECASE)
+        cells = [re.sub(r'<[^>]+>', '', c).strip() for c in cells]
+
+        # OpenInsider columns:
+        # 0:X 1:Filing Date 2:Trade Date 3:Ticker 4:Company
+        # 5:Insider Name 6:Title 7:Trade Type 8:Price 9:Qty
+        # 10:Owned 11:Delta Own 12:Value
+        if len(cells) < 13:
+            continue
+
+        try:
+            filed_date = cells[1].strip()[:10] if cells[1] else None
+            trade_date = cells[2].strip()[:10] if cells[2] else None
+            ticker     = cells[3].strip().upper()
+            company    = cells[4].strip()
+            insider    = cells[5].strip()
+            title      = cells[6].strip()
+            price_s    = re.sub(r'[^\d.]', '', cells[8])
+            qty_s      = re.sub(r'[^\d]',  '', cells[9])
+            value_s    = re.sub(r'[^\d]',  '', cells[12])
+
+            price = float(price_s) if price_s else 0
+            qty   = int(qty_s)     if qty_s   else 0
+            value = int(value_s)   if value_s else int(price * qty)
+
+            if value < MIN_VALUE:
                 continue
 
-            shares = float(item.get("Shares") or 0)
-            price  = float(item.get("Price")  or 0)
-            total  = shares * price
-
-            if total < MIN_TRADE_VALUE:
-                continue
-
-            tx_raw   = (item.get("TransactionType") or "").lower()
-            tx_type  = "buy" if any(x in tx_raw for x in ["purchase", "p -", "buy"]) else "sell"
-            ticker   = (item.get("Ticker") or "").upper().strip()
-            unusual  = total >= FLAG_THRESHOLD
+            unusual = value >= FLAG_VALUE
+            delay   = compute_delay(trade_date, filed_date)
 
             trades.append({
-                "id":              f"qv_{ticker}_{item.get('Name','')}_{tx_date}_{tx_type}",
-                "name":            item.get("Name") or "Unknown",
-                "role":            item.get("Title") or "Corporate Insider",
+                "id":              f"oi_{ticker}_{insider}_{trade_date}_{tx_type}",
+                "name":            insider or "Unknown",
+                "role":            title or "Corporate Insider",
                 "ticker":          ticker or None,
-                "company":         item.get("Company") or "",
+                "company":         company,
                 "type":            tx_type,
-                "shares":          int(shares) if shares else None,
+                "shares":          qty if qty else None,
                 "price_per_share": round(price, 2) if price else None,
-                "amount_min":      total,
-                "amount_max":      total,
-                "amount_raw":      f"${total:,.0f}",
-                "trade_date":      tx_date,
-                "filed_date":      tx_date,
-                "delay_days":      0,
+                "amount_min":      value,
+                "amount_max":      value,
+                "amount_raw":      f"${value:,}",
+                "trade_date":      trade_date,
+                "filed_date":      filed_date,
+                "delay_days":      delay,
                 "sector":          None,
-                "source":          "QuiverQuant / Form 4",
+                "source":          "OpenInsider / Form 4",
                 "unusual":         unusual,
-                "unusual_reason":  f"${total/1e6:.1f}M trade" if unusual else None,
+                "unusual_reason":  f"${value/1e6:.1f}M trade" if unusual else None,
                 "summary":         None,
             })
 
-    except Exception as e:
-        print(f"[QuiverQuant] Error: {e}", file=sys.stderr)
-
-    return trades
-
-
-# ── EDGAR FULL-TEXT SEARCH — SECONDARY SOURCE ─────────────────────────────────
-
-def fetch_edgar_form4():
-    """
-    Fetch Form 4 metadata from EDGAR full-text search.
-    Parses XML only for trades above value threshold.
-    """
-    trades = []
-    from_date = (datetime.now() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%d")
-    url = (
-        "https://efts.sec.gov/LATEST/search-index"
-        f"?forms=4&dateRange=custom&startdt={from_date}"
-        f"&enddt={datetime.now().strftime('%Y-%m-%d')}"
-        "&hits.hits.total.value=true&hits.hits._source=period_of_report,entity_name,file_date"
-        "&hits.hits.total=200"
-    )
-
-    try:
-        req = urllib.request.Request(url, headers=HEADERS)
-        with urllib.request.urlopen(req, timeout=20) as r:
-            data = json.loads(r.read())
-
-        hits = data.get("hits", {}).get("hits", [])
-        print(f"[EDGAR] Form 4 hits: {len(hits)}")
-
-        for hit in hits[:150]:
-            src       = hit.get("_source", {})
-            accession = (hit.get("_id") or "").replace("-", "")
-            if not accession:
-                continue
-
-            cik_match = re.search(r'/data/(\d+)/', hit.get("_index", "") + accession)
-            result = parse_form4(accession, src)
-            trades.extend(result)
-            time.sleep(0.11)  # SEC rate limit: max 10 req/sec
-
-    except Exception as e:
-        print(f"[EDGAR] Error: {e}", file=sys.stderr)
-
-    return trades
-
-
-def parse_form4(accession, src):
-    """Fetch and parse a single Form 4 XML from EDGAR Archives."""
-    trades = []
-    if len(accession) < 18:
-        return trades
-
-    cik      = accession[:10].lstrip("0")
-    idx_url  = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/{accession}-index.htm"
-
-    try:
-        req = urllib.request.Request(idx_url, headers=HEADERS)
-        with urllib.request.urlopen(req, timeout=10) as r:
-            html = r.read().decode("utf-8", errors="replace")
-
-        xml_files = re.findall(r'href="(/Archives/[^"]+\.xml)"', html, re.IGNORECASE)
-        if not xml_files:
-            return trades
-
-        xml_url = f"https://www.sec.gov{xml_files[0]}"
-        req2    = urllib.request.Request(xml_url, headers=HEADERS)
-        with urllib.request.urlopen(req2, timeout=10) as r2:
-            xml = r2.read().decode("utf-8", errors="replace")
-
-        trades = extract_transactions(xml, src)
-
-    except Exception:
-        pass
-
-    return trades
-
-
-def extract_transactions(xml, src):
-    """Parse Form 4 XML — extract all non-derivative transactions."""
-    trades = []
-
-    def tag(t, content):
-        m = re.search(rf'<{t}[^>]*>(.*?)</{t}>', content, re.DOTALL | re.IGNORECASE)
-        return m.group(1).strip() if m else ""
-
-    ticker      = tag("issuerTradingSymbol", xml).upper()
-    issuer_name = tag("issuerName", xml)
-    filer_name  = tag("rptOwnerName", xml) or tag("reportingOwnerName", xml)
-    role        = tag("officerTitle", xml) or "Corporate Insider"
-    file_date   = src.get("file_date", "")
-
-    tx_blocks = re.findall(
-        r'<nonDerivativeTransaction>(.*?)</nonDerivativeTransaction>',
-        xml, re.DOTALL | re.IGNORECASE
-    )
-
-    for block in tx_blocks:
-        tx_code  = tag("transactionCode", block)
-        if tx_code not in ("P", "S"):
-            continue
-
-        shares_s = tag("transactionShares", block)
-        price_s  = tag("transactionPricePerShare", block)
-        tx_date  = tag("transactionDate", block)
-
-        try:
-            shares = float(re.sub(r'[^\d.]', '', shares_s)) if shares_s else 0
-            price  = float(re.sub(r'[^\d.]', '', price_s))  if price_s  else 0
-            total  = shares * price
         except Exception:
-            total = 0
-
-        if total < MIN_TRADE_VALUE:
             continue
 
-        tx_type = "buy" if tx_code == "P" else "sell"
-        unusual = total >= FLAG_THRESHOLD
-
-        trades.append({
-            "id":              f"f4_{ticker}_{filer_name}_{tx_date}_{tx_code}",
-            "name":            filer_name or "Unknown",
-            "role":            role,
-            "ticker":          ticker or None,
-            "company":         issuer_name,
-            "type":            tx_type,
-            "shares":          int(shares) if shares else None,
-            "price_per_share": round(price, 2) if price else None,
-            "amount_min":      total,
-            "amount_max":      total,
-            "amount_raw":      f"${total:,.0f}",
-            "trade_date":      tx_date[:10] if tx_date else None,
-            "filed_date":      file_date[:10] if file_date else None,
-            "delay_days":      compute_delay(tx_date, file_date),
-            "sector":          None,
-            "source":          "SEC EDGAR Form 4",
-            "unusual":         unusual,
-            "unusual_reason":  f"${total/1e6:.1f}M trade" if unusual else None,
-            "summary":         None,
-        })
-
     return trades
-
-
-# ── HELPERS ───────────────────────────────────────────────────────────────────
-
-def compute_delay(t, f):
-    try:
-        return max(0, (
-            datetime.strptime(f[:10], "%Y-%m-%d") -
-            datetime.strptime(t[:10], "%Y-%m-%d")
-        ).days)
-    except Exception:
-        return 0
 
 
 def flag_clusters(trades):
-    """Flag when 2+ insiders buy same ticker within the window."""
+    """Flag 2+ insiders buying same ticker in the window."""
     from collections import defaultdict
-    by_ticker = defaultdict(list)
+    groups = defaultdict(list)
     for t in trades:
         if t["ticker"] and t["type"] == "buy":
-            by_ticker[t["ticker"]].append(t)
-    for ticker, group in by_ticker.items():
+            groups[t["ticker"]].append(t)
+    for ticker, group in groups.items():
         if len(group) >= 2:
             for t in group:
                 t["unusual"] = True
@@ -259,23 +154,30 @@ def dedup(trades):
     return out
 
 
-# ── AI SUMMARIES ─────────────────────────────────────────────────────────────
+def compute_delay(t, f):
+    try:
+        return max(0, (
+            datetime.strptime(f[:10], "%Y-%m-%d") -
+            datetime.strptime(t[:10], "%Y-%m-%d")
+        ).days)
+    except Exception:
+        return 0
+
 
 def generate_summary(trade):
     if not XAI_API_KEY:
         return None
     prompt = (
         f"{trade['name']} ({trade.get('role','insider')}) at {trade.get('company', trade.get('ticker','?'))} "
-        f"{'purchased' if trade['type']=='buy' else 'sold'} {trade.get('shares','?')} shares "
-        f"of {trade['ticker']} at ${trade.get('price_per_share','?')} per share "
-        f"(total ~{trade.get('amount_raw','undisclosed')}) on {trade.get('trade_date','')}. "
-        f"Write 1-2 sentences in plain English explaining what this insider move means for regular investors. "
-        f"Be direct and factual."
+        f"{'purchased' if trade['type']=='buy' else 'sold'} {trade.get('shares','?'):,} shares "
+        f"of {trade['ticker']} at ${trade.get('price_per_share','?')} "
+        f"(total {trade.get('amount_raw','?')}) on {trade.get('trade_date','')}. "
+        f"1-2 sentences plain English for a regular investor. Direct, no hedging."
     )
     try:
         payload = json.dumps({
             "model": "grok-3-mini",
-            "max_tokens": 150,
+            "max_tokens": 120,
             "messages": [{"role": "user", "content": prompt}]
         }).encode()
         req = urllib.request.Request(
@@ -287,39 +189,23 @@ def generate_summary(trade):
             resp = json.loads(r.read())
         return resp["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        print(f"[AI] Error: {e}", file=sys.stderr)
+        print(f"[AI] {e}", file=sys.stderr)
         return None
 
 
-# ── MAIN ─────────────────────────────────────────────────────────────────────
-
 def main():
-    print("=== Fetching Insider Trades (Form 4) — ALL companies ===")
-    print(f"    Min value: ${MIN_TRADE_VALUE:,}  |  Flag threshold: ${FLAG_THRESHOLD:,}  |  Window: {DAYS_BACK} days")
+    print(f"=== Insider Trades — ${MIN_VALUE/1e6:.0f}M+ | Last {DAYS_BACK} days ===")
 
-    trades = []
-
-    # Primary: QuiverQuant (reliable from GitHub Actions)
-    t0 = fetch_quiver_insiders()
-    print(f"[QuiverQuant] Above threshold: {len(t0)}")
-    trades.extend(t0)
-
-    # Secondary: EDGAR direct (if QuiverQuant is sparse)
-    if len(trades) < 10:
-        print("Supplementing with EDGAR...")
-        t1 = fetch_edgar_form4()
-        print(f"[EDGAR] Above threshold: {len(t1)}")
-        trades.extend(t1)
-
+    trades = fetch_openinsider()
     trades = dedup(trades)
     flag_clusters(trades)
 
-    # Sort by trade value descending — biggest moves first
+    # Sort biggest trades first
     trades.sort(key=lambda t: t.get("amount_max") or 0, reverse=True)
-    print(f"Total trades above ${MIN_TRADE_VALUE:,}: {len(trades)}")
+    print(f"Total trades: {len(trades)}")
 
     if XAI_API_KEY:
-        print("Generating AI summaries for top trades...")
+        print("Generating summaries for top 30...")
         for t in trades[:30]:
             if not t.get("summary"):
                 t["summary"] = generate_summary(t)
@@ -327,18 +213,18 @@ def main():
 
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     output = {
-        "last_updated":    datetime.now(timezone.utc).isoformat(),
-        "source":          "QuiverQuant / SEC EDGAR Form 4",
-        "min_trade_value": MIN_TRADE_VALUE,
-        "flag_threshold":  FLAG_THRESHOLD,
-        "days_back":       DAYS_BACK,
-        "count":           len(trades),
-        "trades":          trades,
+        "last_updated":   datetime.now(timezone.utc).isoformat(),
+        "source":         "OpenInsider / SEC Form 4",
+        "min_value":      MIN_VALUE,
+        "flag_threshold": FLAG_VALUE,
+        "days_back":      DAYS_BACK,
+        "count":          len(trades),
+        "trades":         trades,
     }
     with open(OUTPUT_FILE, "w") as f:
         json.dump(output, f, indent=2, default=str)
 
-    print(f"✓ Saved {len(trades)} insider trades → {OUTPUT_FILE}")
+    print(f"✓ Saved {len(trades)} trades → {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":
