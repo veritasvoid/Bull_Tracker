@@ -1,0 +1,45 @@
+name: Fetch Trading Data
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # Every 6 hours
+  workflow_dispatch:          # Allow manual trigger from GitHub UI
+
+permissions:
+  contents: write
+
+jobs:
+  fetch-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Fetch Congressional Trades
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/fetch_congressional.py
+
+      - name: Fetch Insider Trades (Form 4)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/fetch_insiders.py
+
+      - name: Fetch Whale Moves (13F)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/fetch_whales.py
+
+      - name: Commit & push updated data
+        run: |
+          git config user.name  "bull-tracker-bot"
+          git config user.email "bot@bull-tracker"
+          git add data/
+          git diff --cached --quiet || git commit -m "data: auto-update $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push

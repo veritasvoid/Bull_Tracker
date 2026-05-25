@@ -1,0 +1,1051 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Bull Tracker</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@300;400;500;600&family=Syne+Mono&display=swap" rel="stylesheet"/>
+<style>
+  :root {
+    --bg:       #07090F;
+    --surface:  #0D1117;
+    --card:     #111827;
+    --border:   #1F2937;
+    --border2:  #374151;
+    --gold:     #F59E0B;
+    --gold2:    #FCD34D;
+    --green:    #10B981;
+    --red:      #EF4444;
+    --blue:     #3B82F6;
+    --purple:   #8B5CF6;
+    --text:     #F9FAFB;
+    --muted:    #6B7280;
+    --muted2:   #9CA3AF;
+    --font-head: 'Syne', sans-serif;
+    --font-mono: 'IBM Plex Mono', monospace;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-mono);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── GRID TEXTURE ── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background-image:
+      linear-gradient(rgba(245,158,11,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(245,158,11,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none; z-index: 0;
+  }
+
+  /* ── HEADER ── */
+  header {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(7,9,15,0.92);
+    backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border);
+    padding: 0 32px;
+    display: flex; align-items: center; gap: 32px;
+    height: 60px;
+  }
+
+  .logo {
+    font-family: var(--font-head);
+    font-weight: 800;
+    font-size: 22px;
+    letter-spacing: 0.12em;
+    color: var(--gold);
+    display: flex; align-items: center; gap: 10px;
+    text-transform: uppercase;
+  }
+
+  .logo svg { width: 28px; height: 28px; }
+
+  .live-pill {
+    display: flex; align-items: center; gap: 6px;
+    background: rgba(16,185,129,0.1);
+    border: 1px solid rgba(16,185,129,0.25);
+    border-radius: 20px;
+    padding: 3px 10px;
+    font-size: 11px;
+    color: var(--green);
+    letter-spacing: 0.08em;
+  }
+
+  .live-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%,100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.8); }
+  }
+
+  .header-right {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 20px;
+    font-size: 11px; color: var(--muted);
+    letter-spacing: 0.06em;
+  }
+
+  .last-updated { color: var(--muted2); }
+  .last-updated span { color: var(--gold); }
+
+  /* ── STATS BAR ── */
+  .stats-bar {
+    position: relative; z-index: 1;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .stat-cell {
+    padding: 16px 28px;
+    border-right: 1px solid var(--border);
+    position: relative;
+  }
+  .stat-cell:last-child { border-right: none; }
+
+  .stat-label {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+
+  .stat-value {
+    font-family: var(--font-head);
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1;
+  }
+
+  .stat-value.gold { color: var(--gold); }
+  .stat-value.green { color: var(--green); }
+  .stat-value.red { color: var(--red); }
+
+  .stat-sub {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  /* ── TABS ── */
+  .tabs-wrap {
+    position: relative; z-index: 1;
+    border-bottom: 1px solid var(--border);
+    padding: 0 32px;
+    display: flex; gap: 0;
+  }
+
+  .tab-btn {
+    background: none; border: none; cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    padding: 14px 20px;
+    position: relative;
+    text-transform: uppercase;
+    transition: color 0.2s;
+    display: flex; align-items: center; gap: 8px;
+  }
+
+  .tab-btn:hover { color: var(--text); }
+
+  .tab-btn.active {
+    color: var(--gold);
+  }
+
+  .tab-btn.active::after {
+    content: '';
+    position: absolute; bottom: -1px; left: 0; right: 0;
+    height: 2px; background: var(--gold);
+  }
+
+  .tab-count {
+    background: rgba(245,158,11,0.15);
+    color: var(--gold);
+    border-radius: 3px;
+    padding: 1px 6px;
+    font-size: 10px;
+  }
+
+  /* ── MAIN LAYOUT ── */
+  .main {
+    position: relative; z-index: 1;
+    display: grid;
+    grid-template-columns: 1fr 280px;
+    min-height: calc(100vh - 120px);
+  }
+
+  /* ── FEED ── */
+  .feed {
+    padding: 24px 32px;
+    border-right: 1px solid var(--border);
+  }
+
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* ── FILTER BAR ── */
+  .filter-bar {
+    display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center;
+  }
+
+  .filter-input {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text);
+    width: 180px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .filter-input:focus { border-color: var(--gold); }
+  .filter-input::placeholder { color: var(--muted); }
+
+  .filter-select {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text);
+    outline: none;
+    cursor: pointer;
+  }
+
+  .filter-select option { background: var(--card); }
+
+  .filter-label {
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    margin-right: 2px;
+  }
+
+  /* ── TRADE CARD ── */
+  .trade-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 10px;
+    transition: border-color 0.2s, transform 0.15s;
+    cursor: default;
+    animation: fadeUp 0.3s ease both;
+  }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .trade-card:hover {
+    border-color: var(--border2);
+    transform: translateY(-1px);
+  }
+
+  .trade-card.unusual {
+    border-color: rgba(245,158,11,0.35);
+    background: linear-gradient(135deg, var(--card) 0%, rgba(245,158,11,0.04) 100%);
+  }
+
+  .trade-card.unusual::before {
+    content: '⚠ UNUSUAL';
+    display: block;
+    font-size: 9px;
+    letter-spacing: 0.14em;
+    color: var(--gold);
+    font-weight: 600;
+    margin-bottom: 10px;
+    padding: 2px 8px;
+    background: rgba(245,158,11,0.12);
+    border-radius: 3px;
+    width: fit-content;
+  }
+
+  .card-top {
+    display: flex; align-items: flex-start;
+    justify-content: space-between; gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .card-who { display: flex; flex-direction: column; gap: 4px; }
+
+  .card-name {
+    font-family: var(--font-head);
+    font-weight: 700;
+    font-size: 15px;
+    color: var(--text);
+    line-height: 1;
+  }
+
+  .card-role {
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  .card-right {
+    display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+  }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    border-radius: 4px;
+    padding: 3px 9px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .badge.buy  { background: rgba(16,185,129,0.15); color: var(--green); border: 1px solid rgba(16,185,129,0.25); }
+  .badge.sell { background: rgba(239,68,68,0.15); color: var(--red); border: 1px solid rgba(239,68,68,0.25); }
+  .badge.D    { background: rgba(59,130,246,0.12); color: #60A5FA; font-size: 10px; }
+  .badge.R    { background: rgba(239,68,68,0.12); color: #FCA5A5; font-size: 10px; }
+  .badge.I    { background: rgba(139,92,246,0.12); color: #A78BFA; font-size: 10px; }
+
+  .card-amount {
+    font-family: var(--font-head);
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .card-ticker-row {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .ticker {
+    font-family: var(--font-head);
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--gold);
+    letter-spacing: 0.06em;
+  }
+
+  .company-name {
+    font-size: 12px;
+    color: var(--muted2);
+  }
+
+  .sector-tag {
+    margin-left: auto;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    color: var(--purple);
+    background: rgba(139,92,246,0.1);
+    border: 1px solid rgba(139,92,246,0.2);
+    border-radius: 3px;
+    padding: 2px 7px;
+  }
+
+  .card-dates {
+    display: flex; gap: 20px;
+    margin-bottom: 10px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  .card-dates .date-item { display: flex; flex-direction: column; gap: 2px; }
+  .card-dates .date-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+  .card-dates .date-val { color: var(--muted2); }
+
+  .delay-badge {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+  }
+
+  .delay-badge.fast { background: rgba(16,185,129,0.12); color: var(--green); }
+  .delay-badge.slow { background: rgba(245,158,11,0.12); color: var(--gold); }
+  .delay-badge.late { background: rgba(239,68,68,0.12); color: var(--red); }
+
+  .ai-summary {
+    background: rgba(0,0,0,0.3);
+    border-left: 2px solid var(--gold);
+    border-radius: 0 6px 6px 0;
+    padding: 8px 12px;
+    font-size: 11.5px;
+    color: var(--muted2);
+    line-height: 1.6;
+    font-style: italic;
+  }
+
+  /* ── SIDEBAR ── */
+  .sidebar {
+    padding: 24px 20px;
+    position: sticky; top: 60px;
+    height: calc(100vh - 60px);
+    overflow-y: auto;
+    display: flex; flex-direction: column; gap: 24px;
+  }
+
+  .sidebar::-webkit-scrollbar { width: 3px; }
+  .sidebar::-webkit-scrollbar-track { background: transparent; }
+  .sidebar::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+  .sidebar-section { }
+
+  .sidebar-title {
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .watchlist-item {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(31,41,55,0.5);
+    cursor: pointer;
+    transition: color 0.15s;
+  }
+
+  .watchlist-item:hover .wl-name { color: var(--gold); }
+
+  .wl-name {
+    font-size: 12px;
+    color: var(--muted2);
+    transition: color 0.15s;
+  }
+
+  .wl-count {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--gold);
+    background: rgba(245,158,11,0.1);
+    border-radius: 3px;
+    padding: 1px 6px;
+  }
+
+  .top-tickers { display: flex; flex-direction: column; gap: 8px; }
+
+  .ticker-row {
+    display: flex; align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    background: var(--card);
+    border-radius: 6px;
+    border: 1px solid var(--border);
+  }
+
+  .ticker-sym {
+    font-family: var(--font-head);
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--gold);
+  }
+
+  .ticker-info { font-size: 11px; color: var(--muted); }
+
+  .ticker-buys {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--green);
+  }
+
+  /* ── EMPTY STATE ── */
+  .empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--muted);
+  }
+
+  .empty-state .icon { font-size: 40px; margin-bottom: 12px; }
+  .empty-state p { font-size: 13px; line-height: 1.6; }
+
+  /* ── LOADING ── */
+  .loading {
+    text-align: center; padding: 60px;
+    color: var(--muted);
+  }
+
+  .loading-spinner {
+    width: 28px; height: 28px;
+    border: 2px solid var(--border);
+    border-top-color: var(--gold);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 0 auto 12px;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── SCROLL ── */
+  .feed::-webkit-scrollbar { width: 3px; }
+  .feed::-webkit-scrollbar-track { background: transparent; }
+  .feed::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 900px) {
+    .main { grid-template-columns: 1fr; }
+    .sidebar { display: none; }
+    .stats-bar { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  @media (max-width: 600px) {
+    header { padding: 0 16px; }
+    .feed { padding: 16px; }
+    .tabs-wrap { padding: 0 16px; overflow-x: auto; }
+    .stats-bar { grid-template-columns: 1fr 1fr; }
+  }
+
+  /* ── NO DATA MESSAGE ── */
+  .no-data-banner {
+    background: rgba(245,158,11,0.06);
+    border: 1px solid rgba(245,158,11,0.2);
+    border-radius: 8px;
+    padding: 14px 18px;
+    font-size: 12px;
+    color: var(--gold);
+    margin-bottom: 16px;
+    line-height: 1.6;
+  }
+
+  /* ── FOOTER ── */
+  footer {
+    position: relative; z-index: 1;
+    border-top: 1px solid var(--border);
+    padding: 14px 32px;
+    font-size: 11px;
+    color: var(--muted);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+
+  .footer-links { display: flex; gap: 20px; }
+  .footer-links a {
+    color: var(--muted); text-decoration: none;
+    transition: color 0.2s;
+  }
+  .footer-links a:hover { color: var(--gold); }
+</style>
+</head>
+<body>
+
+<!-- ── HEADER ── -->
+<header>
+  <div class="logo">
+    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M3 17L7 9L11 13L15 5L19 11L21 8" stroke="#F59E0B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M7 20C7 18.9 7.9 18 9 18H11C12.1 18 13 18.9 13 20V21H7V20Z" fill="#F59E0B" opacity="0.5"/>
+    </svg>
+    Bull Tracker
+  </div>
+  <div class="live-pill">
+    <span class="live-dot"></span>
+    LIVE
+  </div>
+  <div class="header-right">
+    <span class="last-updated">LAST UPDATE: <span id="lastUpdated">—</span></span>
+    <span>ALL TIMES EST</span>
+  </div>
+</header>
+
+<!-- ── STATS BAR ── -->
+<div class="stats-bar">
+  <div class="stat-cell">
+    <div class="stat-label">Congress Trades Today</div>
+    <div class="stat-value gold" id="statCongress">—</div>
+    <div class="stat-sub" id="statCongressSub">loading...</div>
+  </div>
+  <div class="stat-cell">
+    <div class="stat-label">Insider Trades Today</div>
+    <div class="stat-value" id="statInsider">—</div>
+    <div class="stat-sub" id="statInsiderSub">loading...</div>
+  </div>
+  <div class="stat-cell">
+    <div class="stat-label">⚠ Unusual Activity</div>
+    <div class="stat-value red" id="statUnusual">—</div>
+    <div class="stat-sub" id="statUnusualSub">loading...</div>
+  </div>
+  <div class="stat-cell">
+    <div class="stat-label">Biggest Move</div>
+    <div class="stat-value green" id="statBiggest">—</div>
+    <div class="stat-sub" id="statBiggestSub">loading...</div>
+  </div>
+</div>
+
+<!-- ── TABS ── -->
+<div class="tabs-wrap">
+  <button class="tab-btn active" onclick="switchTab('congress')">
+    🏛 Congressional <span class="tab-count" id="countCongress">0</span>
+  </button>
+  <button class="tab-btn" onclick="switchTab('insider')">
+    📋 Insider Trades <span class="tab-count" id="countInsider">0</span>
+  </button>
+  <button class="tab-btn" onclick="switchTab('whale')">
+    🐋 Whale Moves <span class="tab-count" id="countWhale">0</span>
+  </button>
+  <button class="tab-btn" onclick="switchTab('unusual')">
+    ⚠ Unusual <span class="tab-count" id="countUnusual">0</span>
+  </button>
+</div>
+
+<!-- ── MAIN ── -->
+<div class="main">
+  <div class="feed">
+
+    <!-- CONGRESS TAB -->
+    <div class="tab-panel active" id="tab-congress">
+      <div class="filter-bar">
+        <input class="filter-input" type="text" placeholder="Search name or ticker..." id="filterCongress" oninput="renderCongress()"/>
+        <select class="filter-select" id="filterParty" onchange="renderCongress()">
+          <option value="">All Parties</option>
+          <option value="D">Democrat</option>
+          <option value="R">Republican</option>
+        </select>
+        <select class="filter-select" id="filterType" onchange="renderCongress()">
+          <option value="">Buy & Sell</option>
+          <option value="buy">Buys Only</option>
+          <option value="sell">Sells Only</option>
+        </select>
+      </div>
+      <div id="congressFeed"><div class="loading"><div class="loading-spinner"></div><div>Fetching congressional trades...</div></div></div>
+    </div>
+
+    <!-- INSIDER TAB -->
+    <div class="tab-panel" id="tab-insider">
+      <div class="filter-bar">
+        <input class="filter-input" type="text" placeholder="Search exec or ticker..." id="filterInsider" oninput="renderInsiders()"/>
+        <select class="filter-select" id="filterInsiderType" onchange="renderInsiders()">
+          <option value="">Buy & Sell</option>
+          <option value="buy">Buys Only</option>
+          <option value="sell">Sells Only</option>
+        </select>
+      </div>
+      <div id="insiderFeed"><div class="loading"><div class="loading-spinner"></div><div>Fetching insider trades...</div></div></div>
+    </div>
+
+    <!-- WHALE TAB -->
+    <div class="tab-panel" id="tab-whale">
+      <div class="filter-bar">
+        <input class="filter-input" type="text" placeholder="Search fund or ticker..." id="filterWhale" oninput="renderWhales()"/>
+      </div>
+      <div id="whaleFeed"><div class="loading"><div class="loading-spinner"></div><div>Fetching whale moves...</div></div></div>
+    </div>
+
+    <!-- UNUSUAL TAB -->
+    <div class="tab-panel" id="tab-unusual">
+      <div id="unusualFeed"><div class="loading"><div class="loading-spinner"></div><div>Scanning for unusual activity...</div></div></div>
+    </div>
+
+  </div>
+
+  <!-- ── SIDEBAR ── -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-title">Watchlist — Congress</div>
+      <div id="watchlistCongress"></div>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-title">Hot Tickers This Week</div>
+      <div class="top-tickers" id="hotTickers"></div>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-title">Top Whale Funds</div>
+      <div id="whaleFundList"></div>
+    </div>
+  </aside>
+</div>
+
+<footer>
+  <span>Bull Tracker • Data: SEC EDGAR, Senate eFDS, House Disclosures • Free public data</span>
+  <div class="footer-links">
+    <a href="https://efts.senate.gov" target="_blank">Senate Source</a>
+    <a href="https://www.sec.gov/cgi-bin/browse-edgar" target="_blank">EDGAR Source</a>
+    <a href="https://github.com" target="_blank">GitHub</a>
+  </div>
+</footer>
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  DATA STORE
+// ═══════════════════════════════════════════════════════
+let DATA = {
+  congressional: [],
+  insider: [],
+  whale: [],
+  meta: {}
+};
+
+const WATCHLIST = [
+  "Nancy Pelosi", "Paul Pelosi", "Donald Trump", "Ivanka Trump",
+  "Dan Crenshaw", "Michael McCaul", "Josh Gottheimer", "Ro Khanna",
+  "Brian Mast", "Marjorie Taylor Greene", "Susie Lee", "David Rouzer",
+  "Tommy Tuberville"
+];
+
+const WHALE_FUNDS = [
+  { name: "Berkshire Hathaway", manager: "Warren Buffett" },
+  { name: "Pershing Square", manager: "Bill Ackman" },
+  { name: "Scion Asset Mgmt", manager: "Michael Burry" },
+  { name: "Bridgewater", manager: "Ray Dalio" },
+  { name: "Tiger Global", manager: "Chase Coleman" },
+];
+
+// ═══════════════════════════════════════════════════════
+//  LOAD DATA
+// ═══════════════════════════════════════════════════════
+async function loadData() {
+  const base = window.location.pathname.replace('/index.html', '').replace(/\/$/, '');
+
+  const fetches = [
+    fetch(`${base}/data/congressional_trades.json`).then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch(`${base}/data/insider_trades.json`).then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch(`${base}/data/whale_trades.json`).then(r => r.ok ? r.json() : null).catch(() => null),
+  ];
+
+  const [congress, insider, whale] = await Promise.all(fetches);
+
+  DATA.congressional = congress?.trades || [];
+  DATA.insider       = insider?.trades  || [];
+  DATA.whale         = whale?.trades    || [];
+  DATA.meta = {
+    congressional_updated: congress?.last_updated,
+    insider_updated:       insider?.last_updated,
+    whale_updated:         whale?.last_updated,
+  };
+
+  updateStats();
+  updateLastUpdated();
+  renderCongress();
+  renderInsiders();
+  renderWhales();
+  renderUnusual();
+  renderSidebar();
+}
+
+// ═══════════════════════════════════════════════════════
+//  STATS
+// ═══════════════════════════════════════════════════════
+function updateStats() {
+  const today = new Date().toISOString().slice(0, 10);
+
+  const cToday = DATA.congressional.filter(t => t.filed_date === today).length;
+  const iToday = DATA.insider.filter(t => t.filed_date === today).length;
+  const unusual = [
+    ...DATA.congressional.filter(t => t.unusual),
+    ...DATA.insider.filter(t => t.unusual),
+    ...DATA.whale.filter(t => t.unusual)
+  ].length;
+
+  const allTrades = [...DATA.congressional, ...DATA.insider, ...DATA.whale];
+  const biggest = allTrades.reduce((max, t) => {
+    const v = parseFloat(t.amount_max) || 0;
+    return v > (parseFloat(max?.amount_max) || 0) ? t : max;
+  }, null);
+
+  el('statCongress').textContent   = cToday || DATA.congressional.length;
+  el('statCongressSub').textContent = cToday > 0 ? 'filed today' : `${DATA.congressional.length} total`;
+  el('statInsider').textContent    = iToday || DATA.insider.length;
+  el('statInsiderSub').textContent  = iToday > 0 ? 'filed today' : `${DATA.insider.length} total`;
+  el('statUnusual').textContent    = unusual || '—';
+  el('statUnusualSub').textContent  = unusual > 0 ? 'flagged signals' : 'none flagged';
+  el('statBiggest').textContent    = biggest ? formatAmount(biggest.amount_max) : '—';
+  el('statBiggestSub').textContent  = biggest ? `${biggest.ticker} — ${biggest.name}` : 'loading...';
+
+  el('countCongress').textContent = DATA.congressional.length;
+  el('countInsider').textContent  = DATA.insider.length;
+  el('countWhale').textContent    = DATA.whale.length;
+  el('countUnusual').textContent  = unusual;
+}
+
+function updateLastUpdated() {
+  const ts = DATA.meta.congressional_updated || DATA.meta.insider_updated;
+  if (ts) {
+    const d = new Date(ts);
+    el('lastUpdated').textContent = d.toLocaleString('en-US', {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  RENDER — CONGRESS
+// ═══════════════════════════════════════════════════════
+function renderCongress() {
+  const query  = el('filterCongress').value.toLowerCase();
+  const party  = el('filterParty').value;
+  const type   = el('filterType').value;
+
+  let trades = DATA.congressional.filter(t => {
+    const matchQ = !query || t.name?.toLowerCase().includes(query) || t.ticker?.toLowerCase().includes(query);
+    const matchP = !party || t.party === party;
+    const matchT = !type  || t.type === type;
+    return matchQ && matchP && matchT;
+  });
+
+  const container = el('congressFeed');
+  if (!trades.length) {
+    container.innerHTML = emptyState(DATA.congressional.length === 0
+      ? 'No congressional data yet. GitHub Actions will fetch data on the next scheduled run.'
+      : 'No trades match your filters.');
+    return;
+  }
+
+  container.innerHTML = trades.map((t, i) => tradeCard(t, 'congress', i)).join('');
+}
+
+// ═══════════════════════════════════════════════════════
+//  RENDER — INSIDERS
+// ═══════════════════════════════════════════════════════
+function renderInsiders() {
+  const query = el('filterInsider').value.toLowerCase();
+  const type  = el('filterInsiderType').value;
+
+  let trades = DATA.insider.filter(t => {
+    const matchQ = !query || t.name?.toLowerCase().includes(query) || t.ticker?.toLowerCase().includes(query);
+    const matchT = !type  || t.type === type;
+    return matchQ && matchT;
+  });
+
+  const container = el('insiderFeed');
+  if (!trades.length) {
+    container.innerHTML = emptyState(DATA.insider.length === 0
+      ? 'No insider trade data yet. Run scripts/fetch_insiders.py or wait for the scheduled GitHub Action.'
+      : 'No trades match your filters.');
+    return;
+  }
+  container.innerHTML = trades.map((t, i) => tradeCard(t, 'insider', i)).join('');
+}
+
+// ═══════════════════════════════════════════════════════
+//  RENDER — WHALES
+// ═══════════════════════════════════════════════════════
+function renderWhales() {
+  const query = el('filterWhale').value.toLowerCase();
+
+  let trades = DATA.whale.filter(t => {
+    return !query || t.name?.toLowerCase().includes(query) || t.ticker?.toLowerCase().includes(query);
+  });
+
+  const container = el('whaleFeed');
+  if (!trades.length) {
+    container.innerHTML = emptyState(DATA.whale.length === 0
+      ? 'No 13F whale data yet. These update quarterly when funds file with the SEC.'
+      : 'No trades match your filters.');
+    return;
+  }
+  container.innerHTML = trades.map((t, i) => tradeCard(t, 'whale', i)).join('');
+}
+
+// ═══════════════════════════════════════════════════════
+//  RENDER — UNUSUAL
+// ═══════════════════════════════════════════════════════
+function renderUnusual() {
+  const all = [
+    ...DATA.congressional.filter(t => t.unusual),
+    ...DATA.insider.filter(t => t.unusual),
+    ...DATA.whale.filter(t => t.unusual),
+  ].sort((a, b) => new Date(b.filed_date) - new Date(a.filed_date));
+
+  const container = el('unusualFeed');
+  if (!all.length) {
+    container.innerHTML = emptyState('No unusual activity detected yet. Flags appear when trades exceed normal patterns.');
+    return;
+  }
+  container.innerHTML = all.map((t, i) => tradeCard(t, 'unusual', i)).join('');
+}
+
+// ═══════════════════════════════════════════════════════
+//  RENDER — SIDEBAR
+// ═══════════════════════════════════════════════════════
+function renderSidebar() {
+  // Watchlist counts
+  const wlHtml = WATCHLIST.map(name => {
+    const count = DATA.congressional.filter(t => t.name === name).length;
+    return `<div class="watchlist-item" onclick="filterByName('${name}')">
+      <span class="wl-name">${name}</span>
+      <span class="wl-count">${count}</span>
+    </div>`;
+  }).join('');
+  el('watchlistCongress').innerHTML = wlHtml;
+
+  // Hot tickers
+  const tickerMap = {};
+  [...DATA.congressional, ...DATA.insider].forEach(t => {
+    if (!t.ticker) return;
+    if (!tickerMap[t.ticker]) tickerMap[t.ticker] = { buys: 0, sells: 0, company: t.company };
+    if (t.type === 'buy') tickerMap[t.ticker].buys++;
+    else tickerMap[t.ticker].sells++;
+  });
+
+  const tickers = Object.entries(tickerMap)
+    .sort((a, b) => (b[1].buys + b[1].sells) - (a[1].buys + a[1].sells))
+    .slice(0, 6);
+
+  el('hotTickers').innerHTML = tickers.length ? tickers.map(([sym, d]) => `
+    <div class="ticker-row">
+      <div>
+        <div class="ticker-sym">${sym}</div>
+        <div class="ticker-info">${d.company || ''}</div>
+      </div>
+      <div>
+        <div class="ticker-buys">▲ ${d.buys} buys</div>
+        ${d.sells ? `<div style="font-size:11px;color:var(--red)">▼ ${d.sells} sells</div>` : ''}
+      </div>
+    </div>
+  `).join('') : '<div style="font-size:12px;color:var(--muted)">Loading...</div>';
+
+  // Whale funds
+  el('whaleFundList').innerHTML = WHALE_FUNDS.map(f => {
+    const count = DATA.whale.filter(t => t.fund === f.name).length;
+    return `<div class="watchlist-item">
+      <span class="wl-name">${f.name}<br><span style="font-size:10px;color:var(--muted)">${f.manager}</span></span>
+      <span class="wl-count">${count}</span>
+    </div>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════════════
+//  CARD TEMPLATE
+// ═══════════════════════════════════════════════════════
+function tradeCard(t, source, i) {
+  const isBuy    = t.type === 'buy';
+  const delayN   = t.delay_days || 0;
+  const delayCls = delayN <= 7 ? 'fast' : delayN <= 30 ? 'slow' : 'late';
+  const delayLbl = delayN <= 7 ? `⚡ ${delayN}d` : delayN <= 30 ? `${delayN}d` : `🔴 ${delayN}d`;
+
+  const partyBadge = t.party
+    ? `<span class="badge ${t.party}">${t.party === 'D' ? 'DEM' : t.party === 'R' ? 'REP' : 'IND'}</span>`
+    : '';
+
+  const roleLine = [t.role, t.chamber, t.state].filter(Boolean).join(' · ');
+  const fundLine = t.fund || '';
+
+  return `
+  <div class="trade-card ${t.unusual ? 'unusual' : ''}" style="animation-delay:${i * 0.03}s">
+    <div class="card-top">
+      <div class="card-who">
+        <div class="card-name">${t.name || '—'}</div>
+        <div class="card-role">${roleLine || fundLine || ''}</div>
+        <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap">
+          ${partyBadge}
+          ${t.unusual_reason ? `<span style="font-size:10px;color:var(--gold);opacity:0.8">${t.unusual_reason}</span>` : ''}
+        </div>
+      </div>
+      <div class="card-right">
+        <span class="badge ${isBuy ? 'buy' : 'sell'}">${isBuy ? '▲ BUY' : '▼ SELL'}</span>
+        <div class="card-amount">${formatAmountRange(t.amount_min, t.amount_max)}</div>
+      </div>
+    </div>
+
+    <div class="card-ticker-row">
+      <div class="ticker">${t.ticker || '—'}</div>
+      <div class="company-name">${t.company || ''}</div>
+      ${t.sector ? `<div class="sector-tag">${t.sector}</div>` : ''}
+    </div>
+
+    <div class="card-dates">
+      <div class="date-item">
+        <div class="date-label">Trade Date</div>
+        <div class="date-val">${fmt(t.trade_date)}</div>
+      </div>
+      <div class="date-item">
+        <div class="date-label">Filed Date</div>
+        <div class="date-val">${fmt(t.filed_date)}</div>
+      </div>
+      ${delayN > 0 ? `<div class="date-item">
+        <div class="date-label">Filing Delay</div>
+        <div class="date-val"><span class="delay-badge ${delayCls}">${delayLbl}</span></div>
+      </div>` : ''}
+      ${t.shares ? `<div class="date-item">
+        <div class="date-label">Shares</div>
+        <div class="date-val">${Number(t.shares).toLocaleString()}</div>
+      </div>` : ''}
+    </div>
+
+    ${t.summary ? `<div class="ai-summary">${t.summary}</div>` : ''}
+  </div>`;
+}
+
+// ═══════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════
+function el(id) { return document.getElementById(id); }
+
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  event.currentTarget.classList.add('active');
+  el(`tab-${name}`).classList.add('active');
+}
+
+function filterByName(name) {
+  el('filterCongress').value = name;
+  switchTabByName('congress');
+  renderCongress();
+}
+
+function switchTabByName(name) {
+  document.querySelectorAll('.tab-btn').forEach((b, i) => {
+    const names = ['congress','insider','whale','unusual'];
+    b.classList.toggle('active', names[i] === name);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    p.classList.toggle('active', p.id === `tab-${name}`);
+  });
+}
+
+function fmt(dateStr) {
+  if (!dateStr) return '—';
+  try {
+    return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch { return dateStr; }
+}
+
+function formatAmount(v) {
+  const n = parseFloat(v);
+  if (!n) return '—';
+  if (n >= 1e6) return `$${(n/1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `$${(n/1e3).toFixed(0)}K`;
+  return `$${n}`;
+}
+
+function formatAmountRange(min, max) {
+  if (!min && !max) return '—';
+  if (min && max) {
+    const lo = formatAmount(min), hi = formatAmount(max);
+    return lo === hi ? lo : `${lo} – ${hi}`;
+  }
+  return formatAmount(max || min);
+}
+
+function emptyState(msg) {
+  return `<div class="empty-state"><div class="icon">📭</div><p>${msg}</p></div>`;
+}
+
+// ═══════════════════════════════════════════════════════
+//  BOOT
+// ═══════════════════════════════════════════════════════
+loadData();
+</script>
+</body>
+</html>
