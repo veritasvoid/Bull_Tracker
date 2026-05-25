@@ -13,9 +13,6 @@ import urllib.parse
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 
 WATCHLIST = [
-    # Pelosi family
-    {"name": "Nancy Pelosi",  "chamber": "House", "party": "D", "state": "CA"},
-    {"name": "Paul Pelosi",   "chamber": "Spouse","party": "D", "state": "CA"},
     # Trump family
     {"name": "Donald Trump",  "chamber": "Executive", "party": "R", "state": "FL"},
     # Top outperformers (based on public congressional trading data)
@@ -29,6 +26,9 @@ WATCHLIST = [
     {"name": "David Rouzer",          "chamber": "House",  "party": "R", "state": "NC"},
     {"name": "Tommy Tuberville",      "chamber": "Senate", "party": "R", "state": "AL"},
     {"name": "Sheldon Whitehouse",    "chamber": "Senate", "party": "D", "state": "RI"},
+    {"name": "Pete Sessions",         "chamber": "House",  "party": "R", "state": "TX"},
+    {"name": "Jeff Van Drew",         "chamber": "House",  "party": "R", "state": "NJ"},
+    {"name": "Greg Gianforte",        "chamber": "House",  "party": "R", "state": "MT"},
 ]
 
 WATCHLIST_NAMES = {m["name"].upper() for m in WATCHLIST}
@@ -36,7 +36,7 @@ WATCHLIST_LAST  = {m["name"].split()[-1].upper(): m for m in WATCHLIST}
 
 OUTPUT_FILE = Path(__file__).parent.parent / "data" / "congressional_trades.json"
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+XAI_API_KEY = os.environ.get("XAI_API_KEY", "")
 
 # ── SENATE eFDS ───────────────────────────────────────────────────────────────
 
@@ -53,7 +53,7 @@ def fetch_senate_trades(days_back=90):
     )
 
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "BullTracker/1.0 research"})
+        req = urllib.request.Request(url, headers={"User-Agent": "BullTracker Personal Research veritasvoid2025@gmail.com"})
         with urllib.request.urlopen(req, timeout=15) as r:
             data = json.loads(r.read())
 
@@ -109,7 +109,7 @@ def fetch_house_trades(days_back=90):
     try:
         req = urllib.request.Request(
             f"{url}?{params}",
-            headers={"User-Agent": "BullTracker/1.0 research"}
+            headers={"User-Agent": "BullTracker Personal Research veritasvoid2025@gmail.com"}
         )
         with urllib.request.urlopen(req, timeout=15) as r:
             raw = r.read().decode("utf-8", errors="replace")
@@ -176,7 +176,7 @@ def fetch_quiver_congress():
 
     try:
         req = urllib.request.Request(url, headers={
-            "User-Agent": "BullTracker/1.0 research",
+            "User-Agent": "BullTracker Personal Research veritasvoid2025@gmail.com",
             "Accept": "application/json",
         })
         with urllib.request.urlopen(req, timeout=15) as r:
@@ -302,7 +302,7 @@ def dedup(trades):
 # ── AI SUMMARIES ──────────────────────────────────────────────────────────────
 
 def generate_summary(trade):
-    if not ANTHROPIC_API_KEY:
+    if not XAI_API_KEY:
         return None
     if not trade.get("ticker") or trade["ticker"] == "—":
         return None
@@ -320,22 +320,21 @@ def generate_summary(trade):
 
     try:
         payload = json.dumps({
-            "model": "claude-sonnet-4-20250514",
+            "model": "grok-3-mini",
             "max_tokens": 150,
             "messages": [{"role": "user", "content": prompt}]
         }).encode()
         req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
+            "https://api.x.ai/v1/chat/completions",
             data=payload,
             headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
+                "Authorization": f"Bearer {XAI_API_KEY}",
                 "content-type": "application/json",
             }
         )
         with urllib.request.urlopen(req, timeout=20) as r:
             resp = json.loads(r.read())
-        return resp["content"][0]["text"].strip()
+        return resp["choices"][0]["message"]["content"].strip()
     except Exception as e:
         print(f"[AI] Summary error for {trade['name']}: {e}", file=sys.stderr)
         return None
@@ -363,13 +362,15 @@ def main():
     print(f"[House] Watchlist hits: {len(house)}")
     all_trades.extend(house)
 
-    # Dedup + sort newest first
+    # Dedup + filter to last 90 days + sort newest first
     trades = dedup(all_trades)
-    trades.sort(key=lambda t: t.get("filed_date") or "", reverse=True)
-    print(f"Total unique trades: {len(trades)}")
+    cutoff = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+    trades = [t for t in trades if (t.get("trade_date") or t.get("filed_date") or "") >= cutoff]
+    trades.sort(key=lambda t: t.get("trade_date") or t.get("filed_date") or "", reverse=True)
+    print(f"Total unique trades (last 90 days): {len(trades)}")
 
     # Generate AI summaries
-    if ANTHROPIC_API_KEY:
+    if XAI_API_KEY:
         print("Generating AI summaries...")
         for i, t in enumerate(trades[:50]):  # summarize top 50
             if not t.get("summary"):

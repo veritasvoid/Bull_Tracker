@@ -8,9 +8,10 @@ import json, os, re, time, sys
 from datetime import datetime, timezone
 from pathlib import Path
 import urllib.request
+import urllib.parse
 
 OUTPUT_FILE = Path(__file__).parent.parent / "data" / "whale_trades.json"
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+XAI_API_KEY = os.environ.get("XAI_API_KEY", "")
 
 # Major funds to track — CIK from SEC EDGAR
 WHALE_FUNDS = [
@@ -29,7 +30,7 @@ def get_latest_13f(cik):
     """Get the most recent 13F-HR filing accession number for a CIK."""
     url = f"https://data.sec.gov/submissions/CIK{cik}.json"
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "BullTracker/1.0 research"})
+        req = urllib.request.Request(url, headers={"User-Agent": "BullTracker Personal Research veritasvoid2025@gmail.com"})
         with urllib.request.urlopen(req, timeout=15) as r:
             data = json.loads(r.read())
 
@@ -52,40 +53,120 @@ def get_latest_13f(cik):
 
 
 def fetch_13f_holdings(cik, accession, fund_meta):
-    """Fetch and parse 13F XML holdings."""
+    """Fetch and parse 13F holdings using EDGAR viewer API (avoids Archives 403)."""
     positions = []
 
-    acc_clean = accession.replace("-", "")
-    cik_clean = cik.lstrip("0")
-    base_url  = f"https://www.sec.gov/Archives/edgar/data/{cik_clean}/{acc_clean}/"
+    acc_dashed = accession  # already dashed from submissions API
+    cik_clean  = cik.lstrip("0")
 
-    # Get filing index to find the infotable XML
+    HEADERS = {"User-Agent": "BullTracker Personal Research veritasvoid2025@gmail.com"}
+
+    # Strategy 1: EDGAR filing index via data.sec.gov (not www.sec.gov/Archives)
     try:
-        idx_url = base_url + "index.json"
-        req = urllib.request.Request(idx_url, headers={"User-Agent": "BullTracker/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            idx = json.loads(r.read())
+        acc_nodash = acc_dashed.replace("-", "")
+        idx_url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+        # We already have the accession — go straight to the document list
+        doc_url = (
+            f"https://efts.sec.gov/LATEST/search-index"
+            f"?q=%22{acc_dashed}%22&forms=13F-HR"
+        )
+        req = urllib.request.Request(doc_url, headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read())
 
-        files = idx.get("directory", {}).get("item", [])
-        xml_file = None
-        for f in files:
-            fname = f.get("name", "")
-            if "infotable" in fname.lower() or fname.endswith(".xml"):
-                xml_file = fname
-                break
-
-        if not xml_file:
-            return positions
-
-        xml_url = base_url + xml_file
-        req2 = urllib.request.Request(xml_url, headers={"User-Agent": "BullTracker/1.0"})
-        with urllib.request.urlopen(req2, timeout=15) as r2:
-            xml = r2.read().decode("utf-8", errors="replace")
-
-        positions = parse_infotable(xml, fund_meta, accession)
+        hits = data.get("hits", {}).get("hits", [])
+        for hit in hits[:1]:
+            src = hit.get("_source", {})
+            # Build archive URL with proper headers
+            archive_url = (
+                f"https://www.sec.gov/Archives/edgar/data/{cik_clean}/"
+                f"{acc_nodash}/{acc_nodash}-index.htm"
+            )
+            req2 = urllib.request.Request(archive_url, headers=HEADERS)
+            try:
+                with urllib.request.urlopen(req2, timeout=15) as r2:
+                    html = r2.read().decode("utf-8", errors="replace")
+                xml_links = re.findall(r'href="(/Archives/[^"]+infotable[^"]*\.xml)"', html, re.IGNORECASE)
+                if not xml_links:
+                    xml_links = re.findall(r'href="(/Archives/[^"]+\.xml)"', html, re.IGNORECASE)
+                if xml_links:
+                    xml_url = f"https://www.sec.gov{xml_links[0]}"
+                    req3 = urllib.request.Request(xml_url, headers=HEADERS)
+                    with urllib.request.urlopen(req3, timeout=15) as r3:
+                        xml = r3.read().decode("utf-8", errors="replace")
+                    positions = parse_infotable(xml, fund_meta, acc_dashed)
+            except Exception as e2:
+                print(f"[13F] {fund_meta['name']} archive: {e2}", file=sys.stderr)
 
     except Exception as e:
         print(f"[13F] {fund_meta['name']}: {e}", file=sys.stderr)
+
+    # Strategy 2: Quiver Quant institutional endpoint as fallback
+    if not positions:
+        positions = fetch_13f_quiverquant(fund_meta)
+
+    return positions
+
+
+def fetch_13f_quiverquant(fund_meta):
+    """Fallback: fetch institutional holdings from Quiver Quant."""
+    positions = []
+    # Map fund names to Quiver Quant institution names
+    name_map = {
+        "Berkshire Hathaway":  "BERKSHIRE HATHAWAY INC",
+        "Pershing Square":     "PERSHING SQUARE CAPITAL MANAGEMENT",
+        "Scion Asset Mgmt":    "SCION ASSET MANAGEMENT",
+        "Bridgewater Assoc":   "BRIDGEWATER ASSOCIATES",
+        "Tiger Global Mgmt":   "TIGER GLOBAL MANAGEMENT",
+        "Duquesne Family Off": "DUQUESNE FAMILY OFFICE",
+        "Third Point LLC":     "THIRD POINT LLC",
+        "Appaloosa Mgmt":      "APPALOOSA MANAGEMENT",
+    }
+    institution = name_map.get(fund_meta["name"], "")
+    if not institution:
+        return positions
+
+    url = f"https://api.quiverquant.com/beta/live/hedgefunds/{urllib.parse.quote(institution)}"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "BullTracker Personal Research veritasvoid2025@gmail.com",
+            "Accept": "application/json",
+        })
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read())
+
+        for item in (data if isinstance(data, list) else [])[:50]:
+            ticker  = (item.get("Ticker") or "").upper()
+            shares  = item.get("Shares") or 0
+            value   = item.get("Value") or 0  # in thousands
+            val_usd = float(value) * 1000
+
+            if val_usd < 1_000_000:
+                continue
+
+            positions.append({
+                "id":             f"13f_qv_{fund_meta['name'].replace(' ','_')}_{ticker}",
+                "name":           fund_meta["name"],
+                "fund":           fund_meta["name"],
+                "manager":        fund_meta["manager"],
+                "ticker":         ticker or None,
+                "company":        item.get("Security") or ticker,
+                "type":           "hold",
+                "shares":         int(shares),
+                "amount_min":     val_usd,
+                "amount_max":     val_usd,
+                "amount_raw":     f"${val_usd/1e6:.1f}M",
+                "trade_date":     item.get("Date"),
+                "filed_date":     item.get("Date"),
+                "delay_days":     0,
+                "sector":         None,
+                "source":         "QuiverQuant 13F",
+                "unusual":        val_usd >= 100_000_000,
+                "unusual_reason": f"${val_usd/1e6:.0f}M position" if val_usd >= 100_000_000 else None,
+                "summary":        None,
+            })
+    except Exception as e:
+        print(f"[QuiverQuant 13F] {fund_meta['name']}: {e}", file=sys.stderr)
 
     return positions
 
@@ -222,7 +303,7 @@ def detect_new_positions(current, previous):
 
 
 def generate_summary(trade):
-    if not ANTHROPIC_API_KEY:
+    if not XAI_API_KEY:
         return None
 
     prompt = (
@@ -235,22 +316,21 @@ def generate_summary(trade):
 
     try:
         payload = json.dumps({
-            "model": "claude-sonnet-4-20250514",
+            "model": "grok-3-mini",
             "max_tokens": 150,
             "messages": [{"role": "user", "content": prompt}]
         }).encode()
         req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
+            "https://api.x.ai/v1/chat/completions",
             data=payload,
             headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
+                "Authorization": f"Bearer {XAI_API_KEY}",
                 "content-type": "application/json",
             }
         )
         with urllib.request.urlopen(req, timeout=20) as r:
             resp = json.loads(r.read())
-        return resp["content"][0]["text"].strip()
+        return resp["choices"][0]["message"]["content"].strip()
     except Exception as e:
         print(f"[AI] Whale summary error: {e}", file=sys.stderr)
         return None
@@ -286,7 +366,7 @@ def main():
     print(f"\nTotal positions: {len(all_positions)}")
 
     # Generate AI summaries for unusual / new positions
-    if ANTHROPIC_API_KEY:
+    if XAI_API_KEY:
         print("Generating AI summaries for notable positions...")
         for pos in all_positions:
             if pos.get("unusual") and not pos.get("summary"):
