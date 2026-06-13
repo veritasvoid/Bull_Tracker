@@ -1,5 +1,5 @@
 {
-  "last_updated": "2026-06-12T20:06:03.281496+00:00",
+  "last_updated": "2026-06-13T03:25:54.320815+00:00",
   "source": "SEC EDGAR / Senate eFDS / House Disclosures / QuiverQuant",
   "watchlist": [
     "Donald Trump",
@@ -17,7 +17,7 @@
     "Jeff Van Drew",
     "Greg Gianforte"
   ],
-  "count": 5,
+  "count": 4,
   "trades": [
     {
       "id": "qv_Josh Gottheimer_MSFT_2026-05-19",
@@ -96,27 +96,6 @@
       "amount_max": 50000,
       "amount_raw": "$15,001 - $50,000",
       "trade_date": "2026-05-07",
-      "filed_date": "",
-      "delay_days": 0,
-      "sector": null,
-      "source": "quiverquant",
-      "unusual": false,
-      "summary": null
-    },
-    {
-      "id": "qv_Sheldon Whitehouse_JPM_2026-04-13",
-      "name": "Sheldon Whitehouse",
-      "chamber": "Senate",
-      "party": "D",
-      "state": "RI",
-      "role": "Congress Member",
-      "ticker": "JPM",
-      "company": "",
-      "type": "sell",
-      "amount_min": 15001,
-      "amount_max": 50000,
-      "amount_raw": "$15,001 - $50,000",
-      "trade_date": "2026-04-13",
       "filed_date": "",
       "delay_days": 0,
       "sector": null,
