@@ -1,5 +1,5 @@
 {
-  "last_updated": "2026-06-21T14:03:26.365383+00:00",
+  "last_updated": "2026-06-21T19:25:47.526751+00:00",
   "source": "SEC EDGAR / Senate eFDS / House Disclosures / QuiverQuant",
   "watchlist": [
     "Donald Trump",
@@ -28,7 +28,7 @@
       "role": "Congress Member",
       "ticker": "MSFT",
       "company": "",
-      "type": "buy",
+      "type": "sell",
       "amount_min": 250001,
       "amount_max": 500000,
       "amount_raw": "$250,001 - $500,000",
@@ -49,7 +49,7 @@
       "role": "Congress Member",
       "ticker": "MSFT",
       "company": "",
-      "type": "sell",
+      "type": "buy",
       "amount_min": 250001,
       "amount_max": 500000,
       "amount_raw": "$250,001 - $500,000",
